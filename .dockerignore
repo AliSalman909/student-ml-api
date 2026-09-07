@@ -1,0 +1,37 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# CI configuration
+.github
+
+# Python caches
+__pycache__
+*.py[cod]
+*.egg-info
+
+# Virtual environments
+.venv
+venv
+env
+
+# Tests and test caches (not needed in the runtime image)
+tests
+conftest.py
+.pytest_cache
+.coverage
+htmlcov
+
+# Secrets and local environment files
+.env
+*.env
+
+# Editors / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Docs
+README.md
