@@ -33,7 +33,7 @@ def test_health_returns_healthy_status():
     data = response.json()
 
     assert response.status_code == 200
-    assert data["status"] == "healthy"
+    assert data["status"] == "wrong"
     assert data["application"] == "student-ml-api"
     assert data["version"] == APPLICATION_VERSION
 
