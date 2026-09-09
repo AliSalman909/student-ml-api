@@ -1,0 +1,160 @@
+name: Release
+
+# Runs only when a semantic version tag is pushed (v1.0.0, v1.1.0, v2.0.0).
+# This is the only workflow permitted to publish an image to the registry.
+# Pull request validation is handled separately by ci.yml.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+  packages: write # required for GITHUB_TOKEN to push to GHCR
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: student-ml-api
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pytest
+        run: pytest -v
+
+  publish:
+    name: Build and Publish Image
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+
+      # The version is derived from the tag that triggered this run.
+      # github.ref_name is "v1.0.0"; stripping the leading "v" gives "1.0.0".
+      # The version is never hard-coded in this workflow.
+      - name: Derive version from git tag
+        id: meta
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+
+          # Image names must be lowercase; the GitHub owner may not be.
+          OWNER="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          IMAGE="${REGISTRY}/${OWNER}/${IMAGE_NAME}"
+
+          echo "tag=${TAG}"           >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}"   >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}"       >> "$GITHUB_OUTPUT"
+          echo "sha_short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+          echo "Releasing ${IMAGE}:${VERSION} from tag ${TAG}"
+
+      # Guards against publishing an image whose reported version disagrees
+      # with the tag that triggered the release.
+      - name: Verify VERSION file matches the git tag
+        run: |
+          FILE_VERSION="$(cat VERSION)"
+          TAG_VERSION="${{ steps.meta.outputs.version }}"
+
+          if [ "${FILE_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "::error::VERSION file contains '${FILE_VERSION}' but the tag implies '${TAG_VERSION}'."
+            echo "Update the VERSION file before tagging a release."
+            exit 1
+          fi
+          echo "VERSION file and git tag agree: ${TAG_VERSION}"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Three tags are applied to the same image:
+      #   <version>  immutable, the release users should pin to
+      #   latest     convenience pointer to the newest release
+      #   <sha>      commit-specific, unambiguous even if a tag is moved
+      - name: Build image
+        run: |
+          docker build \
+            --build-arg APP_VERSION=${{ steps.meta.outputs.version }} \
+            --build-arg GIT_COMMIT=${{ github.sha }} \
+            --build-arg BUILD_DATE=${{ steps.meta.outputs.build_date }} \
+            -t ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }} \
+            -t ${{ steps.meta.outputs.image }}:latest \
+            -t ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_short }} \
+            .
+
+      - name: Verify the image serves traffic before publishing
+        run: |
+          docker run -d --name release-check \
+            -p 5000:5000 \
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+
+          for attempt in $(seq 1 10); do
+            if curl -fs http://localhost:5000/health; then
+              echo ""
+              echo "Health check passed on attempt ${attempt}"
+              docker rm -f release-check
+              exit 0
+            fi
+            echo "Waiting for container to become ready (${attempt}/10)..."
+            sleep 2
+          done
+
+          echo "::error::Container failed to become healthy; not publishing."
+          docker logs release-check
+          docker rm -f release-check
+          exit 1
+
+      - name: Push all tags to the registry
+        run: |
+          docker push ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+          docker push ${{ steps.meta.outputs.image }}:latest
+          docker push ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_short }}
+
+      - name: Record image digest
+        id: digest
+        run: |
+          DIGEST="$(docker inspect \
+            --format='{{index .RepoDigests 0}}' \
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }})"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Published digest: ${DIGEST}"
+
+      # Written to the workflow run page so the traceability chain for this
+      # release can be read without digging through job logs.
+      - name: Publish release summary
+        run: |
+          {
+            echo "## Release ${{ steps.meta.outputs.tag }}"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Git tag | \`${{ steps.meta.outputs.tag }}\` |"
+            echo "| Derived version | \`${{ steps.meta.outputs.version }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Image | \`${{ steps.meta.outputs.image }}\` |"
+            echo "| Tags published | \`${{ steps.meta.outputs.version }}\`, \`latest\`, \`${{ steps.meta.outputs.sha_short }}\` |"
+            echo "| Digest | \`${{ steps.digest.outputs.digest }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
