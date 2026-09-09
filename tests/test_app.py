@@ -35,7 +35,22 @@ def test_health_returns_healthy_status():
     assert response.status_code == 200
     assert data["status"] == "healthy"
     assert data["application"] == "student-ml-api"
-    assert data["version"] == APPLICATION_VERSION
+    assert data["application_version"] == APPLICATION_VERSION
+    assert data["model_version"] == "model-1"
+
+
+def test_health_no_longer_returns_a_combined_version_field():
+    """The single "version" field was replaced by two explicit fields."""
+    assert "version" not in client.get("/health").json()
+
+
+def test_health_and_version_endpoints_agree():
+    """Both endpoints report versions, so they must not disagree."""
+    health = client.get("/health").json()
+    version = client.get("/version").json()
+
+    assert health["application_version"] == version["application_version"]
+    assert health["model_version"] == version["model_version"]
 
 
 # --- Prediction endpoint: success ------------------------------------------
