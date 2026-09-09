@@ -43,10 +43,16 @@ def root():
 
 @app.get("/health")
 def health():
+    """Health status, reporting the application and model versions separately.
+
+    The application version and the model version change independently, so
+    they are reported as distinct fields rather than a single "version".
+    """
     return {
         "status": "healthy",
         "application": APPLICATION_NAME,
-        "version": APPLICATION_VERSION,
+        "application_version": APPLICATION_VERSION,
+        "model_version": MODEL_VERSION,
     }
 
 
